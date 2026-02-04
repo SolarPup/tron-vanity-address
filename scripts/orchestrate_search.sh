@@ -66,6 +66,8 @@ wait
 echo "Monitoring hosts for match (Ctrl-C to abort)"
 OUT_DIR="./remote_results-$(date +%Y%m%d-%H%M%S)"
 METRICS_INTERVAL=${METRICS_INTERVAL:-5} # seconds; set to 0 to disable
+METRICS_FORMAT=${METRICS_FORMAT:-} # 'csv' or 'json' to enable file output
+METRICS_FILE=${METRICS_FILE:-"./metrics.out"}
 
 function parse_hashrate() {
   # input example: '1.63k/s' or '500/s'
@@ -132,6 +134,43 @@ while true; do
     echo "---- Metrics (aggregated) ----"
     for l in "${lines[@]}"; do echo "$l"; done
     echo "Total attempts: $total_attempts | Total hashrate: $(human_hr $total_hashrate)"
+
+    # Optional file output in CSV or JSON
+    if [ -n "$METRICS_FORMAT" ]; then
+      ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      if [ "$METRICS_FORMAT" = "json" ]; then
+        # Build JSON array of hosts
+        hosts_json="["
+        first=1
+        for h in "${HOSTS[@]}"; do
+          line=$(get_host_progress "$h")
+          attempts=$(echo "$line" | sed -n 's/.*Attempts: \([0-9,]*\).*/\1/p' | tr -d ',')
+          hr=$(echo "$line" | sed -n 's/.*hashrate: \([^|]*\).*/\1/p' | tr -d ' ')
+          attempts=${attempts:-0}
+          hr=${hr:-"0/s"}
+          [ $first -eq 0 ] && hosts_json="${hosts_json},"
+          first=0
+          hosts_json="${hosts_json}{\"host\":\"${h}\",\"attempts\":${attempts},\"hashrate\":\"${hr}\"}"
+        done
+        hosts_json="${hosts_json}]"
+        echo "{\"timestamp\":\"${ts}\",\"hosts\":${hosts_json},\"total_attempts\":${total_attempts},\"total_hashrate\":\"$(human_hr $total_hashrate)\"}" >> "$METRICS_FILE"
+      elif [ "$METRICS_FORMAT" = "csv" ]; then
+        # CSV header: timestamp,host,attempts,hashrate
+        if [ ! -f "$METRICS_FILE" ]; then
+          echo "timestamp,host,attempts,hashrate" > "$METRICS_FILE"
+        fi
+        for h in "${HOSTS[@]}"; do
+          line=$(get_host_progress "$h")
+          attempts=$(echo "$line" | sed -n 's/.*Attempts: \([0-9,]*\).*/\1/p' | tr -d ',')
+          hr=$(echo "$line" | sed -n 's/.*hashrate: \([^|]*\).*/\1/p' | tr -d ' ')
+          attempts=${attempts:-0}
+          hr=${hr:-"0/s"}
+          echo "${ts},${h},${attempts},\"${hr}\"" >> "$METRICS_FILE"
+        done
+        # Optional summary line
+        echo "${ts},TOTAL,${total_attempts},\"$(human_hr $total_hashrate)\"" >> "$METRICS_FILE"
+      fi
+    fi
   fi
 
   sleep $METRICS_INTERVAL

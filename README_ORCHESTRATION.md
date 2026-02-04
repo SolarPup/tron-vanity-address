@@ -32,6 +32,18 @@ Example: to collect metrics every 10s
 METRICS_INTERVAL=10 ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400
 ```
 
+Output to CSV
+
+```
+METRICS_FORMAT=csv METRICS_FILE=./metrics.csv METRICS_INTERVAL=10 ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400
+```
+
+Output to JSON (one object per line)
+
+```
+METRICS_FORMAT=json METRICS_FILE=./metrics.json METRICS_INTERVAL=10 ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400
+```
+
 Security
 - Use SSH keys and limit access. If you plan to run this on cloud VMs, secure them properly (firewall, key rotation).
 
