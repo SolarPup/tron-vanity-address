@@ -44,6 +44,16 @@ Output to JSON (one object per line)
 METRICS_FORMAT=json METRICS_FILE=./metrics.json METRICS_INTERVAL=10 ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400
 ```
 
+POST metrics to webhook
+
+You can configure the orchestrator to POST JSON metrics to an HTTP endpoint (webhook) every collection interval. Set `METRICS_WEBHOOK` to the URL. Optionally provide an extra header (e.g. auth) with `METRICS_WEBHOOK_HEADER` and set `METRICS_WEBHOOK_INSECURE=1` to disable TLS verification (use with caution).
+
+Example POST usage (JSON payload):
+
+```
+METRICS_FORMAT=json METRICS_FILE=./metrics.json METRICS_INTERVAL=10 METRICS_WEBHOOK="https://metrics.example.com/hooks/ingest" METRICS_WEBHOOK_HEADER='Authorization: Bearer abc123' ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400
+```
+
 Security
 - Use SSH keys and limit access. If you plan to run this on cloud VMs, secure them properly (firewall, key rotation).
 

@@ -68,6 +68,10 @@ OUT_DIR="./remote_results-$(date +%Y%m%d-%H%M%S)"
 METRICS_INTERVAL=${METRICS_INTERVAL:-5} # seconds; set to 0 to disable
 METRICS_FORMAT=${METRICS_FORMAT:-} # 'csv' or 'json' to enable file output
 METRICS_FILE=${METRICS_FILE:-"./metrics.out"}
+# Optional webhook to POST metrics JSON to an HTTP endpoint
+METRICS_WEBHOOK=${METRICS_WEBHOOK:-}          # URL to POST JSON to (optional)
+METRICS_WEBHOOK_HEADER=${METRICS_WEBHOOK_HEADER:-}  # optional additional header, e.g. 'Authorization: Bearer TOKEN'
+METRICS_WEBHOOK_INSECURE=${METRICS_WEBHOOK_INSECURE:-0} # set to 1 to pass --insecure to curl
 
 function parse_hashrate() {
   # input example: '1.63k/s' or '500/s'
@@ -153,7 +157,15 @@ while true; do
           hosts_json="${hosts_json}{\"host\":\"${h}\",\"attempts\":${attempts},\"hashrate\":\"${hr}\"}"
         done
         hosts_json="${hosts_json}]"
-        echo "{\"timestamp\":\"${ts}\",\"hosts\":${hosts_json},\"total_attempts\":${total_attempts},\"total_hashrate\":\"$(human_hr $total_hashrate)\"}" >> "$METRICS_FILE"
+        json_payload="{\"timestamp\":\"${ts}\",\"hosts\":${hosts_json},\"total_attempts\":${total_attempts},\"total_hashrate\":\"$(human_hr $total_hashrate)\"}"
+        echo "$json_payload" >> "$METRICS_FILE"
+        # Optionally POST to webhook
+        if [ -n "$METRICS_WEBHOOK" ]; then
+          curl_opts=( -s -S -X POST -H "Content-Type: application/json" -d "$json_payload" )
+          if [ -n "$METRICS_WEBHOOK_HEADER" ]; then curl_opts+=( -H "$METRICS_WEBHOOK_HEADER" ); fi
+          if [ "$METRICS_WEBHOOK_INSECURE" = "1" ]; then curl_opts+=( --insecure ); fi
+          curl "${curl_opts[@]}" "$METRICS_WEBHOOK" || echo "[warn] Failed to POST metrics to $METRICS_WEBHOOK"
+        fi
       elif [ "$METRICS_FORMAT" = "csv" ]; then
         # CSV header: timestamp,host,attempts,hashrate
         if [ ! -f "$METRICS_FILE" ]; then
@@ -169,6 +181,14 @@ while true; do
         done
         # Optional summary line
         echo "${ts},TOTAL,${total_attempts},\"$(human_hr $total_hashrate)\"" >> "$METRICS_FILE"
+        # Also optionally POST a summary JSON to webhook for CSV mode too
+        if [ -n "$METRICS_WEBHOOK" ]; then
+          json_payload="{\"timestamp\":\"${ts}\",\"total_attempts\":${total_attempts},\"total_hashrate\":\"$(human_hr $total_hashrate)\"}"
+          curl_opts=( -s -S -X POST -H "Content-Type: application/json" -d "$json_payload" )
+          if [ -n "$METRICS_WEBHOOK_HEADER" ]; then curl_opts+=( -H "$METRICS_WEBHOOK_HEADER" ); fi
+          if [ "$METRICS_WEBHOOK_INSECURE" = "1" ]; then curl_opts+=( --insecure ); fi
+          curl "${curl_opts[@]}" "$METRICS_WEBHOOK" || echo "[warn] Failed to POST metrics to $METRICS_WEBHOOK"
+        fi
       fi
     fi
   fi
