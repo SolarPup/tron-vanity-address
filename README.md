@@ -26,6 +26,8 @@ node index.js --mode fixed-edges --similar-to TYAavN2xCDro5Gdip8UU6W9oQmM43rNxzQ
 
 O programa irá avisar sobre a inviabilidade e oferecer fallback (redução de sufixo) quando apropriado.
 
+- Para buscar endereços na testnet, use o flag `--testnet` (ex.: `--testnet`).
+
 ### Persistir private key com segurança
 
 Você pode salvar a private key encontrada em um arquivo com ou sem encriptação:
@@ -36,11 +38,15 @@ Você pode salvar a private key encontrada em um arquivo com ou sem encriptaçã
 node index.js --mode fixed-edges --similar-to ... --save-file ./priv.txt
 ```
 
-- Salvar encriptado (AES-256-GCM) com passphrase:
+- Salvar encriptado (AES-256-GCM) com passphrase (recomendado):
 
 ```bash
 node index.js --mode fixed-edges --similar-to ... --save-file ./priv.enc --encrypt --encrypt-pass "minha-senha-secreta"
 ```
 
-Se `--encrypt` for usado sem `--encrypt-pass`, o processo falhará; em versões futuras será solicitado interativamente uma passphrase.
+Se `--encrypt` for usado sem `--encrypt-pass`, será solicitado interativamente uma passphrase (min 8 chars, letras + números), com até 3 tentativas. Regras de segurança:
+
+- Use uma passphrase forte (mínimo 8 caracteres, inclua letras e números).
+- Prefira arquivos com modo de permissão restrito (ex.: 0600).
+- Se não quiser que a chave privada seja exibida, não use `--reveal-private-key`.
 

@@ -93,6 +93,24 @@ byteArray2hexStr = (byteArray) => {
   return str;
 }
 
+// UI helpers (module-level so they can be tested)
+function formatHashrate(h) {
+  if (h < 1000) return h + '/s';
+  if (h < 1000 * 1000) return (h / 1000).toFixed(2) + 'k/s';
+  if (h < 1000 * 1000 * 1000) return (h / (1000*1000)).toFixed(2) + 'M/s';
+  return (h / (1000*1000*1000)).toFixed(2) + 'G/s';
+}
+
+function formatDuration(seconds) {
+  if (seconds === null) return 'n/a';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds/60) + 'm' + (seconds%60) + 's';
+  const h = Math.floor(seconds/3600);
+  const m = Math.floor((seconds%3600)/60);
+  return h + 'h' + m + 'm';
+}
+
+
 genTronAddress = (testNet = false) =>{    
     let keyPair = ec.genKeyPair();
     // let testNet = testNet;
@@ -184,7 +202,11 @@ const argv = yargs(process.argv.slice(2)).options({
   'threads': { type: 'number', default: Math.max(1, os.cpus().length - 1) },
   'time-limit': { type: 'number', default: 60 },
   'max-attempts': { type: 'number', default: 0 },
-  'reveal-private-key': { type: 'boolean', default: false }
+  'reveal-private-key': { type: 'boolean', default: false },
+  'save-file': { type: 'string' },
+  'encrypt': { type: 'boolean', default: false },
+  'encrypt-pass': { type: 'string' },
+  'testnet': { type: 'boolean', default: false }
 }).argv;
 
 async function startFixedEdges(cfg) {
@@ -205,7 +227,12 @@ async function startFixedEdges(cfg) {
   const initialLeft = cfg['fixed-left'];
   const initialRight = cfg['fixed-right'];
 
-  function renderBar(progress, total, width = 24) {
+  // expose helpers for tests (also exported in module.exports at bottom)
+  // (kept for backwards compatibility)
+  exports.formatHashrate = formatHashrate;
+  exports.formatDuration = formatDuration;
+
+  function renderBar(progress, total, width = 40) {
     const percent = total > 0 ? Math.min(1, progress / total) : 0;
     const filled = Math.round(percent * width);
     const bar = '[' + '#'.repeat(filled) + '-'.repeat(width - filled) + ']';
@@ -213,18 +240,80 @@ async function startFixedEdges(cfg) {
   }
 
   const { savePrivateKeyToFile } = require('./lib/io');
+const { validatePassphrase } = require('./lib/security');
+const cliProgress = require('cli-progress');
 
   async function runPhase(left, right) {
-    return new Promise((resolve) => {
-      let activeWorkers = [];
-      let workerAttempts = new Array(threads).fill(0);
-      let workerDoneCount = 0;
-      const phaseStart = Date.now();
+    let activeWorkers = [];
+    let workerAttempts = new Array(threads).fill(0);
+    let workerDoneCount = 0;
+    const phaseStart = Date.now();
 
+    // If encryption requested but no passphrase provided, prompt interactively
+    async function ensurePassphrase() {
+      if (encrypt && !encryptPass) {
+        try {
+          const pass = await promptPassphrase('Enter passphrase for private key encryption: ');
+          const pass2 = await promptPassphrase('Confirm passphrase: ');
+          if (pass !== pass2) throw new Error('Passphrases did not match');
+          // set into cfg so saving can use it
+          cfg['encrypt-pass'] = pass;
+        } catch (e) {
+          console.error('Encryption setup failed:', e.message);
+          return { ok: false, reason: 'encrypt-missing-pass' };
+        }
+      }
+      return { ok: true };
+    }
+
+    // validate/collect passphrase
+    async function ensureValidPassphraseRetry() {
+      if (!encrypt) return { ok: true };
+      if (encryptPass) {
+        const vr = validatePassphrase(encryptPass, { minLength: 8 });
+        if (!vr.ok) return { ok: false, reason: 'invalid-cli-pass' };
+        cfg['encrypt-pass'] = encryptPass;
+        return { ok: true };
+      }
+      let attemptsLeft = 3;
+      while (attemptsLeft > 0) {
+        try {
+          const p1 = await promptPassphrase('Enter passphrase (min 8 chars, letters+digits): ');
+          const p2 = await promptPassphrase('Confirm passphrase: ');
+          if (p1 !== p2) { attemptsLeft--; continue; }
+          const v = validatePassphrase(p1, { minLength: 8 });
+          if (!v.ok) { attemptsLeft--; continue; }
+          cfg['encrypt-pass'] = p1;
+          return { ok: true };
+        } catch (err) { return { ok: false, reason: 'input-abort' }; }
+      }
+      return { ok: false, reason: 'attempts_exhausted' };
+    }
+
+    // run checks
+    const p1 = await ensurePassphrase();
+    if (!p1.ok) return { found: false, reason: p1.reason };
+    const p2 = await ensureValidPassphraseRetry();
+    if (!p2.ok) return { found: false, reason: p2.reason };
+
+    // create cli-progress bar only when TTY and expected is finite
+    let bar = null;
+    const expected = expectedAttempts(left, right);
+    if (process.stdout.isTTY && expected && Number.isFinite(expected)) {
+      try {
+        bar = new cliProgress.SingleBar({ format: 'Progress {bar} | {percentage}% | {value}/{total} | ETA: {eta_formatted}' }, cliProgress.Presets.shades_classic);
+        // scale total to manageable number to avoid huge total values — map expected to 10000 steps
+        const totalSteps = 10000;
+        bar.start(totalSteps, 0, { eta_formatted: 'n/a' });
+      } catch (e) { bar = null; }
+    }
+
+    return await new Promise((resolve) => {
       function cleanup() {
         activeWorkers.forEach(wk => wk.postMessage({ type: 'stop' }));
         activeWorkers.forEach(wk => wk.terminate());
         activeWorkers = [];
+        try { if (bar) bar.stop(); } catch(e) {}
       }
 
       for (let i = 0; i < threads; i++) {
@@ -238,9 +327,16 @@ async function startFixedEdges(cfg) {
             globalAttempts += delta;
             const elapsed = (Date.now() - phaseStart) / 1000 || 1;
             const hashrate = Math.floor(globalAttempts / elapsed);
-            const expected = expectedAttempts(left, right);
             const etaSeconds = (expected > 0) ? Math.floor((expected - globalAttempts) / Math.max(1, hashrate)) : null;
-            process.stdout.write(`\r${renderBar(globalAttempts, expected)} Attempts: ${globalAttempts} | hashrate: ${hashrate}/s | ETA: ${etaSeconds ? etaSeconds + 's' : 'n/a'} `);
+            // update cli-progress bar if available
+            if (bar) {
+              try {
+                const totalSteps = 10000;
+                const progress = Math.min(totalSteps, Math.floor((globalAttempts / expected) * totalSteps));
+                bar.update(progress, { eta_formatted: formatDuration(etaSeconds) });
+              } catch(e) {}
+            }
+            process.stdout.write(`\r${renderBar(globalAttempts, expected)} Attempts: ${globalAttempts} | hashrate: ${formatHashrate(hashrate)} | ETA: ${formatDuration(etaSeconds)} `);
           } else if (m.type === 'match' && !found) {
             found = true;
             console.log('\n--- MATCH FOUND ---');
@@ -248,8 +344,9 @@ async function startFixedEdges(cfg) {
             if (saveFile) {
               try {
                 if (encrypt) {
-                  if (!encryptPass) throw new Error('Missing --encrypt-pass for encryption');
-                  savePrivateKeyToFile(m.privateKey, saveFile, { encrypt: true, passphrase: encryptPass });
+                  const passphrase = cfg['encrypt-pass'];
+                  if (!passphrase) throw new Error('Missing --encrypt-pass for encryption');
+                  savePrivateKeyToFile(m.privateKey, saveFile, { encrypt: true, passphrase });
                   console.log(`Encrypted private key saved to ${saveFile}`);
                 } else {
                   savePrivateKeyToFile(m.privateKey, saveFile, { encrypt: false });
@@ -282,11 +379,10 @@ async function startFixedEdges(cfg) {
 
       // start workers
       activeWorkers.forEach((w) => {
-        w.postMessage({ type: 'start', pattern: cfg['similar-to'], fixedLeft: left, fixedRight: right, timeLimit: cfg['time-limit'], maxAttempts: cfg['max-attempts'] });
+        w.postMessage({ type: 'start', pattern: cfg['similar-to'], fixedLeft: left, fixedRight: right, timeLimit: cfg['time-limit'], maxAttempts: cfg['max-attempts'], testNet: !!cfg['testnet'] });
       });
     });
   }
-
   // Phase loop with fallback (reduce right side)
   for (let right = initialRight; right >= 0; right--) {
     console.log(`\nPhase: trying left=${initialLeft} right=${right} (expected attempts: ${expectedAttempts(initialLeft, right)})`);
@@ -302,7 +398,50 @@ async function startFixedEdges(cfg) {
   return false;
 }
 
-module.exports = { startFixedEdges }
+// promptPassphrase helper: hidden input
+function promptPassphrase(promptText) {
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    stdout.write(promptText);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    let value = '';
+    function onData(ch) {
+      ch = String(ch);
+      if (ch === '\r' || ch === '\n' || ch === '\u0004') {
+        stdout.write('\n');
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdin.removeListener('data', onData);
+        resolve(value);
+        return;
+      }
+      if (ch === '\u0003') { // ctrl-c
+        stdin.setRawMode(false);
+        stdin.pause();
+        stdin.removeListener('data', onData);
+        reject(new Error('Input aborted'));
+        return;
+      }
+      // backspace handling
+      if (ch === '\u0008' || ch === '\u007f') {
+        if (value.length > 0) {
+          value = value.slice(0, -1);
+          // move cursor back, write space, move back
+          stdout.write('\u001b[1D \u001b[1D');
+        }
+        return;
+      }
+      value += ch;
+      stdout.write('*');
+    }
+    stdin.on('data', onData);
+  });
+}
+
+module.exports = { startFixedEdges, promptPassphrase, formatHashrate, formatDuration }
 
 if (argv.mode === 'fixed-edges') {
   startFixedEdges(argv).catch(err => console.error(err));
