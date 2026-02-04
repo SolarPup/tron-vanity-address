@@ -1,0 +1,7 @@
+# Example hosts file for orchestrate_search.sh
+# One host per line. Can be user@host or IP.
+# Ensure passwordless SSH (key) from controller to each host.
+
+user@host1.example.com
+user@host2.example.com
+10.0.0.5

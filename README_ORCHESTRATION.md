@@ -34,3 +34,8 @@ Customization
 
 Code note
 `index.js` now accepts a `--testnet` boolean flag which is propagated to workers via the `testNet` field in the worker message. Use `--testnet` to run searches that generate testnet addresses (prefix and checksum will follow testnet format).
+
+Auto-clone and repo URL
+The orchestrator can now automatically clone the repository on remote hosts if the configured `REPO_DIR` doesn't exist. Set the `REPO_URL` environment variable to point to the git URL you want to clone (default: `https://github.com/SolarPup/tron-vanity-address.git`). Example:
+
+REPO_URL="https://github.com/aresastro/tron-vanity-address.git" ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400

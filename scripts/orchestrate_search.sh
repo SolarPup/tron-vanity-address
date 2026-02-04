@@ -24,7 +24,10 @@ INDEX_ARGS="$@"
 function start_on_host() {
   local host="$1"
   echo "[${host}] Starting search with: node index.js ${INDEX_ARGS}"
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" bash -lc "cd '$REPO_DIR' && git pull --quiet || true && npm ci --no-audit --no-fund --silent || true && nohup node index.js ${INDEX_ARGS} > $REMOTE_LOG 2>&1 & echo \$! > $REMOTE_PID"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" bash -lc "if [ ! -d '$REPO_DIR' ]; then \
+      if [ -n \"${REPO_URL}\" ]; then git clone \"${REPO_URL}\" '$REPO_DIR'; \
+      else git clone 'https://github.com/SolarPup/tron-vanity-address.git' '$REPO_DIR'; fi; \
+    fi && cd '$REPO_DIR' && git pull --quiet || true && npm ci --no-audit --no-fund --silent || true && nohup node index.js ${INDEX_ARGS} > $REMOTE_LOG 2>&1 & echo \$! > $REMOTE_PID"
 }
 
 function stop_on_host() {
