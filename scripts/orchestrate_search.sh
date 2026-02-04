@@ -65,6 +65,30 @@ wait
 # Monitor loop
 echo "Monitoring hosts for match (Ctrl-C to abort)"
 OUT_DIR="./remote_results-$(date +%Y%m%d-%H%M%S)"
+METRICS_INTERVAL=${METRICS_INTERVAL:-5} # seconds; set to 0 to disable
+
+function parse_hashrate() {
+  # input example: '1.63k/s' or '500/s'
+  local s="$1"
+  s=${s%/s}
+  s=$(echo "$s" | tr '[:upper:]' '[:lower:]')
+  if [[ "$s" =~ ^([0-9]+\.?[0-9]*)k$ ]]; then awk "BEGIN{print ${BASH_REMATCH[1]}*1000}"; return; fi
+  if [[ "$s" =~ ^([0-9]+\.?[0-9]*)m$ ]]; then awk "BEGIN{print ${BASH_REMATCH[1]}*1000000}"; return; fi
+  if [[ "$s" =~ ^([0-9]+\.?[0-9]*)g$ ]]; then awk "BEGIN{print ${BASH_REMATCH[1]}*1000000000}"; return; fi
+  if [[ "$s" =~ ^([0-9]+\.?[0-9]*)$ ]]; then echo "$s"; return; fi
+  echo 0
+}
+
+function get_host_progress() {
+  local host="$1"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" bash -lc "if [ -f '$REPO_DIR/$REMOTE_LOG' ]; then tail -n 200 '$REPO_DIR/$REMOTE_LOG' | grep 'Attempts:' | tail -n1 || true; else echo ''; fi" || echo ""
+}
+
+function human_hr() {
+  local n=$1
+  echo "$n" | awk '{if($1>=1e9){printf "%.2fG/s",$1/1e9}else if($1>=1e6){printf "%.2fM/s",$1/1e6}else if($1>=1e3){printf "%.2fk/s",$1/1e3}else{printf "%d/s",$1}}'
+}
+
 while true; do
   for h in "${HOSTS[@]}"; do
     r=$(check_match_on_host "$h")
@@ -83,5 +107,32 @@ while true; do
       exit 0
     fi
   done
-  sleep 5
+
+  # Collect metrics (if enabled)
+  if [ "$METRICS_INTERVAL" -ne 0 ]; then
+    total_attempts=0
+    total_hashrate=0
+    lines=()
+    for h in "${HOSTS[@]}"; do
+      line=$(get_host_progress "$h")
+      if [ -z "$line" ]; then
+        lines+=("[$h] n/a")
+        continue
+      fi
+      attempts=$(echo "$line" | sed -n 's/.*Attempts: \([0-9,]*\).*/\1/p' | tr -d ',')
+      hr=$(echo "$line" | sed -n 's/.*hashrate: \([^|]*\).*/\1/p' | tr -d ' ')
+      attempts=${attempts:-0}
+      hr=${hr:-0/s}
+      hrnum=$(parse_hashrate "$hr")
+      total_attempts=$((total_attempts + attempts))
+      total_hashrate=$(awk "BEGIN{print $total_hashrate + $hrnum}")
+      lines+=("[$h] Attempts:$attempts hashrate:$hr")
+    done
+
+    echo "---- Metrics (aggregated) ----"
+    for l in "${lines[@]}"; do echo "$l"; done
+    echo "Total attempts: $total_attempts | Total hashrate: $(human_hr $total_hashrate)"
+  fi
+
+  sleep $METRICS_INTERVAL
 done

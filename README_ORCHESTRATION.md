@@ -24,6 +24,13 @@ Run orchestrator
 Notes
 - The script will `git pull` and `npm ci` on each host (best-effort), then start `node index.js` in background writing logs to `search.log` and PID to `search.pid` on the remote host.
 - The orchestrator polls each host for the string `--- MATCH FOUND ---` in `search.log`. On match it fetches `search.log` and `priv.enc` (if present) and stops all hosts.
+- By default the orchestrator will also poll remote logs every 5 seconds and aggregate basic **metrics** (Attempts and hashrate). You can control the polling interval with the `METRICS_INTERVAL` environment variable (seconds). Set `METRICS_INTERVAL=0` to disable metrics collection.
+
+Example: to collect metrics every 10s
+
+```
+METRICS_INTERVAL=10 ./scripts/orchestrate_search.sh hosts.txt --mode fixed-edges --similar-to TYAavN2x... --fixed-left 3 --fixed-right 3 --threads 8 --time-limit 86400
+```
 
 Security
 - Use SSH keys and limit access. If you plan to run this on cloud VMs, secure them properly (firewall, key rotation).
