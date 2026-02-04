@@ -72,6 +72,59 @@ METRICS_FILE=${METRICS_FILE:-"./metrics.out"}
 METRICS_WEBHOOK=${METRICS_WEBHOOK:-}          # URL to POST JSON to (optional)
 METRICS_WEBHOOK_HEADER=${METRICS_WEBHOOK_HEADER:-}  # optional additional header, e.g. 'Authorization: Bearer TOKEN'
 METRICS_WEBHOOK_INSECURE=${METRICS_WEBHOOK_INSECURE:-0} # set to 1 to pass --insecure to curl
+METRICS_WEBHOOK_RETRIES=${METRICS_WEBHOOK_RETRIES:-3}  # number of retries on failure
+METRICS_WEBHOOK_BACKOFF=${METRICS_WEBHOOK_BACKOFF:-1}  # base backoff seconds
+METRICS_WEBHOOK_BACKOFF_FACTOR=${METRICS_WEBHOOK_BACKOFF_FACTOR:-2} # exponential factor
+METRICS_WEBHOOK_LOG=${METRICS_WEBHOOK_LOG:-"./metrics_webhook.log"}
+
+# post_webhook(payload)
+#   Tries to POST the given JSON payload to METRICS_WEBHOOK with retries and exponential backoff.
+#   Logs attempts, HTTP codes and response bodies to METRICS_WEBHOOK_LOG (timestamped).
+function post_webhook() {
+  local payload="$1"
+  local url="$METRICS_WEBHOOK"
+  local retries=$METRICS_WEBHOOK_RETRIES
+  local backoff=$METRICS_WEBHOOK_BACKOFF
+  local factor=$METRICS_WEBHOOK_BACKOFF_FACTOR
+
+  if [ -z "$url" ]; then
+    echo "[webhook] no METRICS_WEBHOOK configured" >> "$METRICS_WEBHOOK_LOG"
+    return 1
+  fi
+
+  local attempt=0
+  while [ $attempt -lt $((retries+1)) ]; do
+    attempt=$((attempt+1))
+    # build curl options
+    curl_opts=( -s -S -X POST -H "Content-Type: application/json" -d "$payload" )
+    if [ -n "$METRICS_WEBHOOK_HEADER" ]; then curl_opts+=( -H "$METRICS_WEBHOOK_HEADER" ); fi
+    if [ "$METRICS_WEBHOOK_INSECURE" = "1" ]; then curl_opts+=( --insecure ); fi
+
+    # capture response and http code (http code on last line)
+    local resp
+    if resp=$(curl "${curl_opts[@]}" "$url" -w "\n%{http_code}" 2>&1); then
+      local httpcode=$(echo "$resp" | tail -n1)
+      local body=$(echo "$resp" | sed '$d' | tr '\n' ' ')
+      echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') [webhook] attempt=${attempt} url=${url} http_code=${httpcode} response=${body}" >> "$METRICS_WEBHOOK_LOG"
+      if [ "$httpcode" -ge 200 ] && [ "$httpcode" -lt 300 ]; then
+        return 0
+      fi
+    else
+      local err=$(echo "$resp" | tr '\n' ' ')
+      echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') [webhook] attempt=${attempt} url=${url} error=${err}" >> "$METRICS_WEBHOOK_LOG"
+    fi
+
+    # backoff before retry (if more attempts left)
+    if [ $attempt -le $retries ]; then
+      sleep_time=$backoff
+      for i in $(seq 2 $attempt); do
+        sleep_time=$((sleep_time * factor))
+      done
+      sleep $sleep_time
+    fi
+  done
+  return 1
+}
 
 function parse_hashrate() {
   # input example: '1.63k/s' or '500/s'
@@ -159,12 +212,11 @@ while true; do
         hosts_json="${hosts_json}]"
         json_payload="{\"timestamp\":\"${ts}\",\"hosts\":${hosts_json},\"total_attempts\":${total_attempts},\"total_hashrate\":\"$(human_hr $total_hashrate)\"}"
         echo "$json_payload" >> "$METRICS_FILE"
-        # Optionally POST to webhook
+        # Optionally POST to webhook using post_webhook() with retries
         if [ -n "$METRICS_WEBHOOK" ]; then
-          curl_opts=( -s -S -X POST -H "Content-Type: application/json" -d "$json_payload" )
-          if [ -n "$METRICS_WEBHOOK_HEADER" ]; then curl_opts+=( -H "$METRICS_WEBHOOK_HEADER" ); fi
-          if [ "$METRICS_WEBHOOK_INSECURE" = "1" ]; then curl_opts+=( --insecure ); fi
-          curl "${curl_opts[@]}" "$METRICS_WEBHOOK" || echo "[warn] Failed to POST metrics to $METRICS_WEBHOOK"
+          if ! post_webhook "$json_payload"; then
+            echo "[warn] Failed to POST metrics to $METRICS_WEBHOOK after ${METRICS_WEBHOOK_RETRIES} attempts (see $METRICS_WEBHOOK_LOG)"
+          fi
         fi
       elif [ "$METRICS_FORMAT" = "csv" ]; then
         # CSV header: timestamp,host,attempts,hashrate
@@ -184,10 +236,9 @@ while true; do
         # Also optionally POST a summary JSON to webhook for CSV mode too
         if [ -n "$METRICS_WEBHOOK" ]; then
           json_payload="{\"timestamp\":\"${ts}\",\"total_attempts\":${total_attempts},\"total_hashrate\":\"$(human_hr $total_hashrate)\"}"
-          curl_opts=( -s -S -X POST -H "Content-Type: application/json" -d "$json_payload" )
-          if [ -n "$METRICS_WEBHOOK_HEADER" ]; then curl_opts+=( -H "$METRICS_WEBHOOK_HEADER" ); fi
-          if [ "$METRICS_WEBHOOK_INSECURE" = "1" ]; then curl_opts+=( --insecure ); fi
-          curl "${curl_opts[@]}" "$METRICS_WEBHOOK" || echo "[warn] Failed to POST metrics to $METRICS_WEBHOOK"
+          if ! post_webhook "$json_payload"; then
+            echo "[warn] Failed to POST metrics to $METRICS_WEBHOOK after ${METRICS_WEBHOOK_RETRIES} attempts (see $METRICS_WEBHOOK_LOG)"
+          fi
         fi
       fi
     fi
